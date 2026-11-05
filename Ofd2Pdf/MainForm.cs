@@ -24,6 +24,80 @@ namespace Ofd2Pdf
 
         Converter converter = new Converter();
 
+        // 转换或扫描进行中时为 true，此时不允许修改文件列表
+        volatile bool isBusy = false;
+
+        private bool CheckBusy()
+        {
+            if (isBusy)
+            {
+                MessageBox.Show("正在处理中，请稍候。", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            return isBusy;
+        }
+
+        /// <summary>
+        /// 添加文件或文件夹（文件夹会在后台递归扫描 .ofd 文件），已在列表中的文件不会重复添加。
+        /// </summary>
+        private async void AddPaths(string[] paths)
+        {
+            if (CheckBusy())
+            {
+                return;
+            }
+
+            isBusy = true;
+            var oldCursor = Cursor;
+            Cursor = Cursors.WaitCursor;
+            try
+            {
+                List<string> files = await Task.Run(() => OfdScanner.Expand(paths));
+
+                var existing = new HashSet<string>(fileList.Select(f => f.FileName), StringComparer.OrdinalIgnoreCase);
+                int added = 0;
+                foreach (var file in files)
+                {
+                    if (existing.Add(file))
+                    {
+                        fileList.Add(new OFDFile(file));
+                        added++;
+                    }
+                }
+                LoadFilesToListView();
+
+                if (files.Count == 0)
+                {
+                    MessageBox.Show("未找到 OFD 文件。", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                else if (added == 0)
+                {
+                    MessageBox.Show("找到的 OFD 文件均已在列表中。", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("扫描文件失败：" + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                Cursor = oldCursor;
+                isBusy = false;
+            }
+        }
+
+        private void buttonFolder_Click(object sender, EventArgs e)
+        {
+            using (var fbd = new FolderBrowserDialog())
+            {
+                fbd.Description = "选择文件夹，将递归扫描其中所有 OFD 文件（PDF 保存在原文件旁）";
+                fbd.ShowNewFolderButton = false;
+                if (fbd.ShowDialog() == DialogResult.OK)
+                {
+                    AddPaths(new[] { fbd.SelectedPath });
+                }
+            }
+        }
+
         private void button1_Click(object sender, EventArgs e)
         {
             OpenFileDialog ofd = new OpenFileDialog();
@@ -33,12 +107,7 @@ namespace Ofd2Pdf
             var result = ofd.ShowDialog();
             if (result == DialogResult.OK)
             {
-                foreach (var file in ofd.FileNames)
-                {
-                    OFDFile oFDFile = new OFDFile(file);
-                    fileList.Add(oFDFile);
-                }
-                LoadFilesToListView();
+                AddPaths(ofd.FileNames);
             }
         }
 
@@ -78,6 +147,10 @@ namespace Ofd2Pdf
 
         private void button3_Click(object sender, EventArgs e)
         {
+            if (CheckBusy())
+            {
+                return;
+            }
             fileList.Clear();
             LoadFilesToListView();
         }
@@ -89,47 +162,73 @@ namespace Ofd2Pdf
                 MessageBox.Show("请先添加或拖拽文件！", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+            if (CheckBusy())
+            {
+                return;
+            }
+            isBusy = true;
             Task.Run(() =>
             {
-                bool didSth = false;
-                for (int i = 0; i < fileList.Count; i++)
+                try
                 {
-                    if (fileList[i].Status == Status.转换完成)
-                    {
-                        continue;
-                    }
-
-                    // get the list item
-                    var item = listView1.Items[i].SubItems[1];
-
-                    // set converting
-                    item.ForeColor = ConvertColor(Status.正在转换);
-                    item.Text = Status.正在转换.ToString();
-                    fileList[i].Status = Status.正在转换;
-
-                    // convert to pdf
-                    string PdfName = fileList[i].FileName.Substring(0, fileList[i].FileName.Length - 3) + "pdf";
-                    ConvertResult result = converter.ConvertToPdf(fileList[i].FileName, PdfName);
-
-                    if (result == ConvertResult.Failed)
-                    {
-                        item.ForeColor = ConvertColor(Status.转换失败);
-                        item.Text = Status.转换失败.ToString();
-                        fileList[i].Status = Status.转换失败;
-                    }
-                    else
-                    {
-                        item.ForeColor = ConvertColor(Status.转换完成);
-                        item.Text = Status.转换完成.ToString();
-                        fileList[i].Status = Status.转换完成;
-                        didSth = true;
-                    }
+                    ConvertAll();
                 }
-                if (!didSth)
+                finally
                 {
-                    MessageBox.Show("当前所有任务已经完成，请添加新的文件或清空重来。", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    isBusy = false;
                 }
             });
+        }
+
+        private void ConvertAll()
+        {
+            int succeeded = 0;
+            int failed = 0;
+            for (int i = 0; i < fileList.Count; i++)
+            {
+                if (fileList[i].Status == Status.转换完成)
+                {
+                    continue;
+                }
+
+                // get the list item
+                var item = listView1.Items[i].SubItems[1];
+                listView1.Items[i].EnsureVisible();
+
+                // set converting
+                item.ForeColor = ConvertColor(Status.正在转换);
+                item.Text = Status.正在转换.ToString();
+                fileList[i].Status = Status.正在转换;
+
+                // convert to pdf，PDF 与 OFD 同目录、同名
+                string PdfName = OfdScanner.GetPdfPath(fileList[i].FileName);
+                ConvertResult result = converter.ConvertToPdf(fileList[i].FileName, PdfName);
+
+                if (result == ConvertResult.Failed)
+                {
+                    item.ForeColor = ConvertColor(Status.转换失败);
+                    item.Text = Status.转换失败.ToString();
+                    fileList[i].Status = Status.转换失败;
+                    failed++;
+                }
+                else
+                {
+                    item.ForeColor = ConvertColor(Status.转换完成);
+                    item.Text = Status.转换完成.ToString();
+                    fileList[i].Status = Status.转换完成;
+                    succeeded++;
+                }
+            }
+
+            if (succeeded == 0 && failed == 0)
+            {
+                MessageBox.Show("当前所有任务已经完成，请添加新的文件或清空重来。", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            else
+            {
+                MessageBox.Show(string.Format("转换结束：成功 {0} 个，失败 {1} 个。", succeeded, failed), "Ofd2Pdf",
+                    MessageBoxButtons.OK, failed > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+            }
         }
 
         private void listView1_DragEnter(object sender, DragEventArgs e)
@@ -146,13 +245,9 @@ namespace Ofd2Pdf
 
         private void listView1_DragDrop(object sender, DragEventArgs e)
         {
+            // 支持同时拖入文件和文件夹
             string[] files = (string[])e.Data.GetData(DataFormats.FileDrop);
-            foreach (var file in files)
-            {
-                OFDFile oFDFile = new OFDFile(file);
-                fileList.Add(oFDFile);
-            }
-            LoadFilesToListView();
+            AddPaths(files);
         }
     }
 }

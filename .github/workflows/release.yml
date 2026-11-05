@@ -1,0 +1,55 @@
+name: Build & Release
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore Ofd2Pdf.sln
+
+      - name: Build (Release)
+        run: >-
+          msbuild Ofd2Pdf.sln /m
+          /p:Configuration=Release /p:Platform="Any CPU"
+          /p:GenerateManifests=false /p:SignManifests=false
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "dist/Ofd2Pdf"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item "Ofd2Pdf/bin/Release/*" $out -Recurse -Exclude *.pdb,*.xml
+          Copy-Item README.md, LICENSE.txt $out
+          Compress-Archive -Path "$out/*" `
+            -DestinationPath "dist/Ofd2Pdf.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ofd2Pdf
+          path: dist/Ofd2Pdf/
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Ofd2Pdf.zip
+          generate_release_notes: true

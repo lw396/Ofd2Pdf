@@ -26,10 +26,18 @@ namespace Ofd2Pdf
 
                 bool hasFailed = false;
 
-                for (int i = 0; i < args.Length; i++)
+                // 参数可以是 OFD 文件，也可以是文件夹（递归扫描其中的 OFD 文件）
+                var files = OfdScanner.Expand(args);
+                if (files.Count == 0)
                 {
-                    string file = args[i];
-                    string PdfName = file.Substring(0, file.Length - 3) + "pdf";
+                    Console.WriteLine("[Warning]: no .ofd files found");
+                    Environment.Exit(1);
+                }
+
+                for (int i = 0; i < files.Count; i++)
+                {
+                    string file = files[i];
+                    string PdfName = OfdScanner.GetPdfPath(file);
 
                     var result = converter.ConvertToPdf(file, PdfName);
 
